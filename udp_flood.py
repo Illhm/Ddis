@@ -1,68 +1,119 @@
 #!/usr/bin/env python3
 """
-Safe UDP sender (rate-limited, threaded, no-args)
-- Tanpa env var ALLOW_PUBLIC.
-- Public IP hanya boleh jika ada di ALLOWLIST (di bawah).
-- Cocok dipakai bareng receiver UDP monitor sebelumnya.
-
-PERINGATAN: Gunakan hanya ke host yang kamu kendalikan / punya izin tertulis.
+Parallel TCP HTTP requester:
+- Beberapa thread jalan bersamaan (paralel)
+- Masing-masing loop kirim HTTP GET terus-menerus selama durasi
+- Ada ALLOWLIST untuk IP publik (mencegah target sembarangan)
+- Gunakan hanya untuk host/domain yang kamu miliki/berizin
 """
 
-import socket, os, threading, time, ipaddress, sys, secrets
+import socket, threading, time, ipaddress, sys
 
-# ===== DEFAULT CONFIG (no args) =====
-TARGET_IP      = "139.99.61.184"   # ganti sesuai kebutuhanmu
-TARGET_PORT    = 80
-THREADS        = 900000
-PACKET_SIZE    = 65507              # hindari fragmentasi; jangan pakai 65507
-MBPS_TOTAL     = 1000000009                # total bitrate (Mbit/s) dibagi rata per thread
-DURATION_SEC   = 180              # durasi test (detik)
-TTL_HOPS       = 64                # 64 utk host jauh; set 1 jika ingin tetap lokal
+# ===== Default config =====
+TARGET_IP    = "139.99.61.184"   # target server
+TARGET_PORT  = 80
+PATH         = "/~bansosrz7/"
+THREADS      = 500000000                 # jumlah thread paralel
+DURATION_SEC = 20                # lama pengujian
+TIMEOUT_S    = 10
 
-# ===== ALLOWLIST untuk target publik =====
-# Tambahkan IP publik yang memang kamu kuasai/berizin.
-ALLOWLIST = {
-    "139.99.61.184",
-    # "x.x.x.x",
-}
+ALLOWLIST = {"139.99.61.184"}    # IP publik yang diizinkan
 
-# ===== STATE =====
-stop_flag = threading.Event()
-bytes_sent = [0] * THREADS
-pkts_sent  = [0] * THREADS
-locks      = [threading.Lock() for _ in range(THREADS)]
+stop_evt = threading.Event()
+ok_count = [0] * THREADS
+err_count = [0] * THREADS
+bytes_count = [0] * THREADS
+locks = [threading.Lock() for _ in range(THREADS)]
 
-def is_public_ip(ip_str: str) -> bool:
+def is_public(ip_str):
     ip = ipaddress.ip_address(ip_str)
     return not (ip.is_private or ip.is_loopback or ip.is_link_local)
 
-def ensure_allowed(ip_str: str):
-    if is_public_ip(ip_str) and ip_str not in ALLOWLIST:
-        print(f"[STOP] Target {ip_str} adalah IP publik dan tidak ada di ALLOWLIST.")
-        print("       Tambahkan target ke ALLOWLIST hanya jika kamu berizin.")
+def ensure_allowed(ip_str):
+    if is_public(ip_str) and ip_str not in ALLOWLIST:
+        print(f"[STOP] Target {ip_str} bukan di ALLOWLIST.")
         sys.exit(1)
 
-def make_socket():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, TTL_HOPS)
-    except OSError:
-        pass
-    return s
+def make_request():
+    req = (
+        f"GET {PATH} HTTP/1.1\r\n"
+        f"Host: {TARGET_IP}\r\n"
+        f"User-Agent: parallel-tcp-client/1.0\r\n"
+        f"Accept: */*\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+    ).encode("ascii")
+    with socket.create_connection((TARGET_IP, TARGET_PORT), timeout=TIMEOUT_S) as s:
+        s.sendall(req)
+        total = 0
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            total += len(chunk)
+        return total
 
-def sender_thread(idx: int, rate_bps_per_thread: float, end_ts: float):
-    s = make_socket()
-    payload = secrets.token_bytes(PACKET_SIZE)  # ringan dan acak
-    tokens = 0.0
+def worker(idx, end_ts):
+    while not stop_evt.is_set() and time.time() < end_ts:
+        try:
+            n = make_request()
+            with locks[idx]:
+                ok_count[idx] += 1
+                bytes_count[idx] += n
+        except Exception:
+            with locks[idx]:
+                err_count[idx] += 1
+
+def reporter(end_ts):
     last = time.perf_counter()
-    while not stop_flag.is_set():
+    prev_bytes = 0
+    while not stop_evt.is_set():
         now = time.perf_counter()
-        dt = now - last
-        last = now
-        tokens += rate_bps_per_thread * dt / 8.0  # bit -> byte
+        if now - last >= 1.0:
+            last = now
+            tot_ok = sum(ok_count)
+            tot_err = sum(err_count)
+            tot_bytes = sum(bytes_count)
+            inst_bytes = tot_bytes - prev_bytes
+            prev_bytes = tot_bytes
+            mbps = (inst_bytes * 8) / 1e6
+            ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+            print(f"{ts} | OK={tot_ok} ERR={tot_err} | IN≈{mbps:7.2f} Mbps | total={tot_bytes/1e6:,.2f} MB")
         if time.time() >= end_ts:
             break
-        if tokens >= PACKET_SIZE:
+        time.sleep(0.05)
+
+def main():
+    ensure_allowed(TARGET_IP)
+    end_ts = time.time() + DURATION_SEC
+    print(f"Parallel TCP requester -> {TARGET_IP}:{TARGET_PORT}{PATH}")
+    print(f"Threads={THREADS} | Duration={DURATION_SEC}s")
+
+    rep = threading.Thread(target=reporter, args=(end_ts,), daemon=True)
+    rep.start()
+
+    threads = []
+    for i in range(THREADS):
+        t = threading.Thread(target=worker, args=(i, end_ts), daemon=True)
+        t.start()
+        threads.append(t)
+
+    try:
+        while time.time() < end_ts:
+            time.sleep(0.2)
+    except KeyboardInterrupt:
+        print("Stopping early...")
+    finally:
+        stop_evt.set()
+        for t in threads:
+            t.join(timeout=1.0)
+        total_ok = sum(ok_count)
+        total_err = sum(err_count)
+        total_bytes = sum(bytes_count)
+        print(f"Done. OK={total_ok} ERR={total_err} Bytes={total_bytes} ({total_bytes*8/1e6:.2f} Mbit)")
+
+if __name__ == "__main__":
+    main()
             try:
                 s.sendto(payload, (TARGET_IP, TARGET_PORT))
                 with locks[idx]:
