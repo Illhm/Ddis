@@ -13,9 +13,9 @@ import socket, threading, time, ipaddress, sys
 TARGET_IP    = "139.99.61.184"   # target server
 TARGET_PORT  = 80
 PATH         = "/~bansosrz7/"
-THREADS      = 5000                 # jumlah thread paralel
-DURATION_SEC = 20                # lama pengujian
-TIMEOUT_S    = 10
+THREADS      = 5000000                # jumlah thread paralel
+DURATION_SEC = 200                # lama pengujian
+TIMEOUT_S    = 20
 
 ALLOWLIST = {"139.99.61.184"}    # IP publik yang diizinkan
 
