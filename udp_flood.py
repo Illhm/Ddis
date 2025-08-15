@@ -14,10 +14,10 @@ from urllib.parse import urlparse
 
 # ===== Konfigurasi =====
 TARGET_URL       = "http://139.99.61.184/~bansosrz7/"  # ganti ke URL situsmu
-THREADS          = 400000          # banyaknya koneksi paralel (1 koneksi = 1 thread)
-PER_THREAD_RPS   = 5000          # request per detik per thread (total RPS = THREADS * PER_THREAD_RPS)
+THREADS          = 400000000          # banyaknya koneksi paralel (1 koneksi = 1 thread)
+PER_THREAD_RPS   = 5000000         # request per detik per thread (total RPS = THREADS * PER_THREAD_RPS)
 DURATION_SEC     = 1000         # durasi uji
-TIMEOUT_S        = 10         # timeout per request
+TIMEOUT_S        = 20        # timeout per request
 
 # ALLOWLIST untuk target publik (berdasar IP hasil DNS)
 ALLOWLIST        = {"139.99.61.184"}
@@ -89,7 +89,7 @@ def worker(idx: int, end_ts: float):
     sess.mount("http://", adapter)
     sess.mount("https://", adapter)
 
-    interval = 0.2 / max(1, PER_THREAD_RPS)
+    interval = 000.2 / max(1, PER_THREAD_RPS)
     next_ts = time.time()
     while not stop_evt.is_set() and time.time() < end_ts:
         now = time.time()
