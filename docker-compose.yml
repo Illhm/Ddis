@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  slowloris-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: slowloris-checker:latest
+    container_name: slowloris-checker
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./reports:/app/reports
+    command: >
+      http://example.com
+      --ports 80,443
+      --connections 5
+      --duration 30
+      --output json
+      --file /app/reports/results.json
+      --report /app/reports/report.html
+      --verbose
+    networks:
+      - scanner-network
+    restart: "no"
+
+networks:
+  scanner-network:
+    driver: bridge

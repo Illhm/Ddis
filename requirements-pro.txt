@@ -1,0 +1,18 @@
+# Slowloris Checker - Production Requirements
+#
+# This tool uses only Python standard library for maximum compatibility.
+# No external dependencies required for core functionality.
+#
+# Python 3.8+ is required for:
+# - asyncio improvements
+# - typing features
+# - dataclasses
+
+# Optional: For enhanced CLI experience (not required)
+# rich>=13.0.0          # Beautiful terminal formatting
+# click>=8.1.0          # Alternative CLI framework
+
+# Optional: For advanced features (not required)
+# pyyaml>=6.0           # YAML configuration files
+# jinja2>=3.1.0         # Advanced HTML templating
+# aiohttp>=3.9.0        # Alternative async HTTP client
