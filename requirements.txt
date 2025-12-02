@@ -1,0 +1,13 @@
+# HTTP Slowloris Check - Requirements
+# 
+# Script ini hanya menggunakan Python standard library.
+# File ini disediakan untuk best practice dan kompatibilitas dengan tools
+# seperti pip, virtualenv, dan CI/CD pipelines.
+#
+# Tidak ada dependencies eksternal yang diperlukan.
+# Python 3.6+ sudah cukup untuk menjalankan script ini.
+
+# Untuk development/testing (optional):
+# pylint>=2.0.0
+# black>=22.0.0
+# pytest>=7.0.0
