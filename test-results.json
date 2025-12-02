@@ -1,0 +1,40 @@
+{
+  "scan_id": "scan_38ae988e1605",
+  "target": {
+    "url": "http://localhost:8899",
+    "ip": "127.0.0.1"
+  },
+  "timing": {
+    "started_at": "2025-12-02T07:02:25.818113",
+    "completed_at": "2025-12-02T07:02:35.843429",
+    "duration_seconds": 10.025316
+  },
+  "results": {
+    "8899": {
+      "port": 8899,
+      "total_connections": 2,
+      "successful_connections": 2,
+      "failed_connections": 0,
+      "kept_open_count": 2,
+      "closed_early_count": 0,
+      "success_rate": 100.0,
+      "kept_open_rate": 100.0,
+      "median_duration": 10.02,
+      "mean_duration": 10.02,
+      "protection_score": 5.0,
+      "status": "vulnerable",
+      "total_bytes_sent": 381,
+      "total_bytes_received": 0,
+      "errors": []
+    }
+  },
+  "overall": {
+    "score": 5.0,
+    "status": "vulnerable",
+    "vulnerable_ports": [
+      8899
+    ],
+    "protected_ports": []
+  },
+  "metadata": {}
+}
